@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// === UUIDs de tu firmware ===
+// === UUIDs del firmware ===
 const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const String char1Uuid   = "beb5483e-36e1-4688-b7f5-ea07361b26a8"; // sintonización (READ/WRITE)
 const String char2Uuid   = "ceb5483e-36e1-4688-b7f5-ea07361b26a8"; // offset/estado (WRITE) y lecturas sensor (READ)
@@ -19,19 +19,28 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
+    // Tema en morados
+    final scheme = ColorScheme.fromSeed(seedColor: Colors.deepPurple);
     return MaterialApp(
       title: 'SOLLOW BLE Tuner',
       theme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
+        colorScheme: scheme,
         useMaterial3: true,
-        textTheme: const TextTheme(
-          titleLarge: TextStyle(fontWeight: FontWeight.w700),
-          bodyMedium: TextStyle(fontSize: 14),
-        ),
         cardTheme: const CardTheme(
           margin: EdgeInsets.symmetric(vertical: 8),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16))),
           elevation: 1,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: const OutlineInputBorder(),
+          isDense: true,
+          focusedBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: scheme.primary, width: 2),
+          ),
+        ),
+        textTheme: const TextTheme(
+          titleLarge: TextStyle(fontWeight: FontWeight.w700),
+          bodyMedium: TextStyle(fontSize: 14),
         ),
       ),
       home: const HomePage(),
@@ -51,7 +60,7 @@ class _HomePageState extends State<HomePage> {
   BluetoothCharacteristic? ch1;
   BluetoothCharacteristic? ch2;
 
-  // Campos de entrada
+  // Entradas
   final _kp = TextEditingController(text: '2.0');
   final _ti = TextEditingController(text: '0.0');
   final _td = TextEditingController(text: '0.02');
@@ -76,6 +85,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  // -------- Permisos / Conexión --------
   Future<void> _ensurePerms() async {
     if (!Platform.isAndroid) return;
 
@@ -86,7 +96,7 @@ class _HomePageState extends State<HomePage> {
 
     final scan = await Permission.bluetoothScan.request();
     final conn = await Permission.bluetoothConnect.request();
-    final loc = await Permission.locationWhenInUse.request();
+    final loc  = await Permission.locationWhenInUse.request();
 
     if (scan.isPermanentlyDenied || conn.isPermanentlyDenied || loc.isPermanentlyDenied) {
       await openAppSettings();
@@ -95,7 +105,7 @@ class _HomePageState extends State<HomePage> {
 
     final service = await Permission.location.serviceStatus;
     if (!service.isEnabled) {
-      throw Exception('Activa la Ubicación del sistema (requerido por algunos OEMs para escanear BLE).');
+      throw Exception('Activa “Ubicación” del sistema (algunos equipos la requieren para escanear BLE).');
     }
 
     if (!scan.isGranted || !conn.isGranted || !loc.isGranted) {
@@ -127,7 +137,7 @@ class _HomePageState extends State<HomePage> {
       await subScan.cancel();
 
       if (found == null) {
-        throw Exception('No se encontró SOLLOW. Verifica que esté anunciando, cerca y con Ubicación del sistema activa.');
+        throw Exception('No se encontró SOLLOW. Verifica que anuncie cerca y que “Ubicación” esté activa.');
       }
 
       device = found;
@@ -151,7 +161,7 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      // Lee snapshots iniciales
+      // Instantáneas iniciales
       await _readParams();
       await _readSensor();
     } catch (e) {
@@ -177,14 +187,14 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // ---------- Writes ----------
+  // -------- Writes --------
   Future<void> _sendTuning() async {
     if (ch1 == null) return;
     final msg = '*${_kp.text},${_ti.text},${_td.text},${_vmax.text},${_valturb.text}\n';
     try {
       await ch1!.write(utf8.encode(msg), withoutResponse: false)
           .timeout(const Duration(seconds: 2));
-      await _readParams(); // confirma en snapshot
+      await _readParams(); // confirmar
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH1: $e')));
@@ -196,7 +206,7 @@ class _HomePageState extends State<HomePage> {
     try {
       await ch2!.write(utf8.encode('OFFSET=${_offset.text}\n'), withoutResponse: false)
           .timeout(const Duration(seconds: 2));
-      await _readParams(); // refleja offset
+      await _readParams(); // refleja offset en snapshot
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH2 (offset): $e')));
@@ -208,7 +218,7 @@ class _HomePageState extends State<HomePage> {
     try {
       await ch2!.write(utf8.encode('ESTADO=$v\n'), withoutResponse: false)
           .timeout(const Duration(seconds: 2));
-      // leer sensor para ver movimiento/feedback
+      // leer sensor como feedback rápido
       await _readSensor();
     } catch (e) {
       if (!mounted) return;
@@ -216,7 +226,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ---------- Reads ----------
+  // -------- Reads --------
   Future<void> _readParams() async {
     if (ch1 == null) return;
     try {
@@ -241,12 +251,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ---------- UI ----------
+  // -------- UI --------
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('SOLLOW BLE Tuner'),
+        backgroundColor: cs.primary,
+        foregroundColor: cs.onPrimary,
         actions: [
           if (_connected)
             Padding(
@@ -255,8 +269,9 @@ class _HomePageState extends State<HomePage> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
+                    color: cs.onPrimary.withOpacity(0.15),
                     borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: cs.onPrimary.withOpacity(0.25)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -277,148 +292,165 @@ class _HomePageState extends State<HomePage> {
             ),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (!_connected)
-                ElevatedButton.icon(
-                  onPressed: _connecting ? null : _scanAndConnect,
-                  icon: const Icon(Icons.bluetooth_searching),
-                  label: Text(_connecting ? 'Conectando...' : 'Buscar y Conectar'),
-                ),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (!_connected)
+            FilledButton.icon(
+              onPressed: _connecting ? null : _scanAndConnect,
+              icon: const Icon(Icons.bluetooth_searching),
+              label: Text(_connecting ? 'Conectando…' : 'Buscar y Conectar'),
+            ),
+
+          // --- PID / Vmax / ValTurb ---
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Parámetros PID / Vmax / ValTurb',
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
                     children: [
-                      Text('Parámetros PID / Vmax / ValTurb', style: Theme.of(context).textTheme.titleLarge),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          _numField('Kp', _kp),
-                          _numField('Ti', _ti),
-                          _numField('Td', _td),
-                          _numField('Vmax', _vmax),
-                          _numField('ValTurb', _valturb),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          FilledButton.icon(
-                            onPressed: _connected ? _sendTuning : null,
-                            icon: const Icon(Icons.send),
-                            label: const Text('Enviar'),
-                          ),
-                          const SizedBox(width: 12),
-                          OutlinedButton.icon(
-                            onPressed: _connected ? _readParams : null,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('Leer parámetros'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      _monoBox(context, 'Snapshot', lastParams),
+                      _numField('Kp', _kp),
+                      _numField('Ti', _ti),
+                      _numField('Td', _td),
+                      _numField('Vmax', _vmax),
+                      _numField('ValTurb', _valturb),
                     ],
                   ),
-                ),
-              ),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  const SizedBox(height: 12),
+                  Row(
                     children: [
-                      Text('Offset y Estado', style: Theme.of(context).textTheme.titleLarge),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          _numField('Offset', _offset),
-                          FilledButton.icon(
-                            onPressed: _connected ? _sendOffset : null,
-                            icon: const Icon(Icons.tune),
-                            label: const Text('Enviar Offset'),
-                          ),
-                          const SizedBox(width: 12),
-                          OutlinedButton.icon(
-                            onPressed: _connected ? () => _sendEstado(1) : null,
-                            icon: const Icon(Icons.play_arrow),
-                            label: const Text('Iniciar (ESTADO=1)'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _connected ? () => _sendEstado(0) : null,
-                            icon: const Icon(Icons.stop),
-                            label: const Text('Detener (ESTADO=0)'),
-                          ),
-                        ],
+                      FilledButton.icon(
+                        onPressed: _connected ? _sendTuning : null,
+                        icon: const Icon(Icons.send),
+                        label: const Text('Enviar'),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton.icon(
+                        onPressed: _connected ? _readParams : null,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Leer parámetros'),
                       ),
                     ],
                   ),
-                ),
+                  const SizedBox(height: 8),
+                  _monoBox(context, 'Snapshot', lastParams),
+                ],
               ),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            ),
+          ),
+
+          // --- Offset (solo) ---
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Offset', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 10),
+                  Row(
                     children: [
-                      Text('Lecturas del Sensor', style: Theme.of(context).textTheme.titleLarge),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          FilledButton.icon(
-                            onPressed: _connected ? _readSensor : null,
-                            icon: const Icon(Icons.sensors),
-                            label: const Text('Leer sensor'),
-                          ),
-                          const SizedBox(width: 12),
-                          if (_connected)
-                            TextButton.icon(
-                              onPressed: () async {
-                                // sondeo rápido 5 lecturas
-                                for (int i = 0; i < 5; i++) {
-                                  await _readSensor();
-                                  await Future.delayed(const Duration(milliseconds: 150));
-                                }
-                              },
-                              icon: const Icon(Icons.timelapse),
-                              label: const Text('Sondeo x5'),
-                            ),
-                        ],
+                      Expanded(child: _numField('Offset', _offset)),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: _connected ? _sendOffset : null,
+                        icon: const Icon(Icons.tune),
+                        label: const Text('Enviar Offset'),
                       ),
-                      const SizedBox(height: 8),
-                      _monoBox(context, 'Última lectura', lastSensor),
                     ],
                   ),
-                ),
+                ],
               ),
-            ],
-          );
-        },
+            ),
+          ),
+
+          // --- Estado (separado de Offset) ---
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Estado', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _connected ? () => _sendEstado(1) : null,
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Iniciar (ESTADO=1)'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _connected ? () => _sendEstado(0) : null,
+                        icon: const Icon(Icons.stop),
+                        label: const Text('Detener (ESTADO=0)'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // --- Lectura del Sensor ---
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Lecturas del Sensor', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _connected ? _readSensor : null,
+                        icon: const Icon(Icons.sensors),
+                        label: const Text('Leer sensor'),
+                      ),
+                      const SizedBox(width: 12),
+                      if (_connected)
+                        TextButton.icon(
+                          onPressed: () async {
+                            // sondeo rápido de 5 lecturas
+                            for (int i = 0; i < 5; i++) {
+                              await _readSensor();
+                              await Future.delayed(const Duration(milliseconds: 150));
+                            }
+                          },
+                          icon: const Icon(Icons.timelapse),
+                          label: const Text('Sondeo x5'),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _monoBox(context, 'Última lectura', lastSensor),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
+  // -------- Widgets helpers --------
   Widget _numField(String label, TextEditingController c) {
     return ConstrainedBox(
-      constraints: const BoxConstraints.tightFor(width: 150),
+      constraints: const BoxConstraints.tightFor(width: 160),
       child: TextField(
         controller: c,
         keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-          isDense: true,
-        ),
+        decoration: InputDecoration(labelText: label),
         maxLines: 1,
       ),
     );
@@ -430,23 +462,18 @@ class _HomePageState extends State<HomePage> {
       margin: const EdgeInsets.only(top: 6),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.5),
+        color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.45),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: const TextStyle(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 6),
-          // Evita overflow con SelectableText + soft wrap + maxLines razonable
-          SelectableText(
-            body,
-            style: const TextStyle(fontFamily: 'monospace'),
-            maxLines: 5,
-          ),
-        ],
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        SelectableText(
+          body,
+          style: const TextStyle(fontFamily: 'monospace'),
+          maxLines: 6,
+        ),
+      ]),
     );
   }
 }
