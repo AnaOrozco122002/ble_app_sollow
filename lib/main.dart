@@ -6,10 +6,44 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-// === UUIDs del firmware ===
-const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-const String char1Uuid   = "beb5483e-36e1-4688-b7f5-ea07361b26a8"; // sintonización (READ/WRITE)
-const String char2Uuid   = "ceb5483e-36e1-4688-b7f5-ea07361b26a8"; // offset/estado/umbrales (WRITE) + lecturas (READ)
+/// =========================
+/// Perfiles de robots (UUIDs)
+/// =========================
+class RobotProfile {
+  final String label;       // Texto para UI
+  final String nameHint;    // Nombre esperado (advertising), opcional
+  final String service;
+  final String ch1;
+  final String ch2;
+
+  const RobotProfile({
+    required this.label,
+    required this.nameHint,
+    required this.service,
+    required this.ch1,
+    required this.ch2,
+  });
+}
+
+// ZENIT (nuevo)
+const profileZenit = RobotProfile(
+  label: 'ZENIT (nuevo)',
+  nameHint: 'ZENIT',
+  service: '4fafc201-1fb5-459e-8fcc-c5c9c331914b',
+  ch1:     'beb5483e-36e1-4688-b7f5-ea07361b26a8',
+  ch2:     'ceb5483e-36e1-4688-b7f5-ea07361b26a8',
+);
+
+// SOLLOW (viejo)
+const profileSollowOld = RobotProfile(
+  label: 'SOLLOW (viejo)',
+  nameHint: 'SOLLOW',
+  service: '4fafc201-1fb5-120e-8fcc-c5c9c331914b',
+  ch1:     'beb5483e-36e1-120e-b7f5-ea07361b26a8',
+  ch2:     'ceb5483e-36e1-120e-b7f5-ea07361b26a8',
+);
+
+const allProfiles = [profileZenit, profileSollowOld];
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +56,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(seedColor: Colors.deepPurple);
     return MaterialApp(
-      title: 'SOLLOW BLE Tuner',
+      title: 'SOLLOW/ZENIT BLE Tuner',
       theme: ThemeData(
         colorScheme: scheme,
         useMaterial3: true,
@@ -60,8 +94,8 @@ class _HomePageState extends State<HomePage> {
   BluetoothDevice? device;
   BluetoothCharacteristic? ch1;
   BluetoothCharacteristic? ch2;
+  RobotProfile? activeProfile;
 
-  // NUEVO: suscripción al estado de conexión
   StreamSubscription<BluetoothConnectionState>? _connSub;
 
   // Entradas (escritura)
@@ -70,16 +104,16 @@ class _HomePageState extends State<HomePage> {
   final _td = TextEditingController(text: '0.02');
   final _vmax = TextEditingController(text: '1023');
   final _valturb = TextEditingController(text: '150');
-  final _ktur = TextEditingController(text: '0.6'); // NUEVO KTurb
+  final _ktur = TextEditingController(text: '0.6');
   final _offset = TextEditingController(text: '1.0');
 
-  // NUEVO: umbrales QTR
-  final _thOn  = TextEditingController(text: '250');
-  final _thOff = TextEditingController(text: '180');
+  // Umbrales QTR
+  final _thOn  = TextEditingController(text: '520');
+  final _thOff = TextEditingController(text: '320');
 
   // Lecturas (crudo)
-  String lastParamsRaw = '—'; // snapshot crudo CH1
-  String lastSensorRaw = '—'; // snapshot crudo CH2
+  String lastParamsRaw = '—';
+  String lastSensorRaw = '—';
 
   // Valores parseados para UI
   String pKp = '—', pTi = '—', pTd = '—', pVmax = '—', pValTurb = '—', pOffset = '—', pKTurb = '—';
@@ -88,16 +122,16 @@ class _HomePageState extends State<HomePage> {
   bool _connecting = false;
   bool get _connected => device != null && ch1 != null && ch2 != null;
 
-  // === Handler para desconexión automática ===
   void _handlePeripheralDisconnected() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('SOLLOW se desconectó')),
+      const SnackBar(content: Text('El robot BLE se desconectó')),
     );
     setState(() {
       device = null;
       ch1 = null;
       ch2 = null;
+      activeProfile = null;
       lastParamsRaw = '—';
       lastSensorRaw = '—';
       pKp = pTi = pTd = pVmax = pValTurb = pOffset = pKTurb = '—';
@@ -118,7 +152,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // ================== Permisos / Conexión ==================
+  // ============== Permisos / Conexión ==============
   Future<void> _ensurePerms() async {
     if (!Platform.isAndroid) return;
 
@@ -146,58 +180,156 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // ============== Selector cuando hay varios candidatos ==============
+  Future<({BluetoothDevice dev, RobotProfile profile, int rssi})?> _askUserToChoose(
+      List<({BluetoothDevice dev, RobotProfile profile, int rssi})> candidates,
+      ) async {
+    final list = [...candidates]..sort((a, b) => b.rssi.compareTo(a.rssi));
+
+    return showModalBottomSheet<({BluetoothDevice dev, RobotProfile profile, int rssi})>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: false,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              const Text(
+                'Selecciona a qué robot conectarte',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 6),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  itemCount: list.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final c = list[i];
+                    final name = c.dev.platformName.isNotEmpty ? c.dev.platformName : '(sin nombre)';
+                    return ListTile(
+                      leading: const Icon(Icons.memory),
+                      title: Text(name, overflow: TextOverflow.ellipsis),
+                      subtitle: Text('${c.profile.label} · RSSI ${c.rssi} dBm'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(ctx).pop(c),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _scanAndConnect() async {
     try {
       setState(() => _connecting = true);
       await _ensurePerms();
 
-      BluetoothDevice? found;
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 6));
+      // Lista de candidatos: device + perfil + rssi
+      final candidates = <({BluetoothDevice dev, RobotProfile profile, int rssi})>[];
 
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 7));
       final subScan = FlutterBluePlus.scanResults.listen((results) {
         for (final r in results) {
-          final name = r.device.platformName;
-          final uuids = r.advertisementData.serviceUuids;
-          final containsSvc = uuids.map((g) => g.toString().toLowerCase()).contains(serviceUuid);
-          if (name == 'SOLLOW' || containsSvc) found = r.device;
+          final name = r.device.platformName.trim();
+          final ad = r.advertisementData;
+          final advUuids = ad.serviceUuids.map((u) => u.toString().toLowerCase()).toSet();
+
+          for (final p in allProfiles) {
+            final matchesName = name.isNotEmpty && name.toUpperCase().contains(p.nameHint.toUpperCase());
+            final matchesSvc  = advUuids.contains(p.service.toLowerCase());
+            if (matchesName || matchesSvc) {
+              final already = candidates.any((c) => c.dev.remoteId == r.device.remoteId);
+              if (!already) {
+                candidates.add((dev: r.device, profile: p, rssi: r.rssi));
+              }
+            }
+          }
         }
       });
 
-      await Future.delayed(const Duration(seconds: 6));
+      await Future.delayed(const Duration(seconds: 7));
       await FlutterBluePlus.stopScan();
       await subScan.cancel();
 
-      if (found == null) {
-        throw Exception('No se encontró SOLLOW. Verifica que anuncie cerca y que “Ubicación” esté activa.');
+      if (candidates.isEmpty) {
+        throw Exception('No se encontraron ZENIT ni SOLLOW.\nAcércalos al teléfono y verifica que estén encendidos.');
       }
 
-      device = found;
-      await device!.connect(timeout: const Duration(seconds: 10));
+      // Elegir: si hay 1 auto; si hay 2+ mostrar selector
+      ({BluetoothDevice dev, RobotProfile profile, int rssi}) chosen;
 
+      if (candidates.length == 1) {
+        candidates.sort((a, b) => b.rssi.compareTo(a.rssi));
+        chosen = candidates.first;
+      } else {
+        final picked = await _askUserToChoose(candidates);
+        if (picked != null) {
+          chosen = picked;
+        } else {
+          candidates.sort((a, b) => b.rssi.compareTo(a.rssi));
+          chosen = candidates.first;
+        }
+      }
+
+      device = chosen.dev;
+      activeProfile = chosen.profile;
+
+      await device!.connect(timeout: const Duration(seconds: 10));
       try { await device!.requestMtu(185); } catch (_) {}
 
-      // === SUSCRIPCIÓN AL ESTADO DE CONEXIÓN ===
-      try {
-        await _connSub?.cancel();
-      } catch (_) {}
+      try { await _connSub?.cancel(); } catch (_) {}
       _connSub = device!.connectionState.listen((s) {
         if (s == BluetoothConnectionState.disconnected) {
           _handlePeripheralDisconnected();
         }
       });
 
+      // Descubrir servicios y confirmar/ajustar perfil en caso de advertising vacío
       final services = await device!.discoverServices();
-      final srv = services.firstWhere(
-            (s) => s.uuid.toString().toLowerCase() == serviceUuid,
-        orElse: () => throw Exception('Servicio no hallado en el dispositivo'),
+
+      // 1) intenta con el perfil elegido
+      BluetoothService? srv = services.firstWhere(
+            (s) => s.uuid.toString().toLowerCase() == activeProfile!.service.toLowerCase(),
+        orElse: () => null as BluetoothService,
       );
 
-      ch1 = srv.characteristics.firstWhere((c) => c.uuid.toString().toLowerCase() == char1Uuid);
-      ch2 = srv.characteristics.firstWhere((c) => c.uuid.toString().toLowerCase() == char2Uuid);
+      // 2) si no está, busca si coincide el otro perfil
+      if (srv == null) {
+        for (final p in allProfiles) {
+          final found = services.where((x) => x.uuid.toString().toLowerCase() == p.service.toLowerCase());
+          if (found.isNotEmpty) {
+            srv = found.first;
+            activeProfile = p;
+            break;
+          }
+        }
+      }
+
+      if (srv == null) {
+        throw Exception('Servicio BLE de ZENIT/SOLLOW no hallado en el dispositivo seleccionado.');
+      }
+
+      ch1 = srv.characteristics.firstWhere(
+            (c) => c.uuid.toString().toLowerCase() == activeProfile!.ch1.toLowerCase(),
+        orElse: () => throw Exception('CH1 no hallada para ${activeProfile!.label}'),
+      );
+      ch2 = srv.characteristics.firstWhere(
+            (c) => c.uuid.toString().toLowerCase() == activeProfile!.ch2.toLowerCase(),
+        orElse: () => throw Exception('CH2 no hallada para ${activeProfile!.label}'),
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Conectado a SOLLOW')),
+          SnackBar(content: Text('Conectado a ${activeProfile!.label}')),
         );
       }
 
@@ -213,27 +345,26 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _disconnect() async {
-    // Cancela listener antes de desconectar manualmente
     try { await _connSub?.cancel(); } catch (_) {}
     _connSub = null;
 
     try { if (device != null) await device!.disconnect(); } catch (_) {}
     if (!mounted) return;
     setState(() {
-      device = null; ch1 = null; ch2 = null;
+      device = null; ch1 = null; ch2 = null; activeProfile = null;
       lastParamsRaw = '—'; lastSensorRaw = '—';
       pKp = pTi = pTd = pVmax = pValTurb = pOffset = pKTurb = '—';
       sSalida = sRaw = sThOn = sThOff = '—';
     });
   }
 
-  // ================== Writes ==================
+  // ============== Writes ==============
   Future<void> _sendTuning() async {
     if (ch1 == null) return;
     final msg = '*${_kp.text},${_ti.text},${_td.text},${_vmax.text},${_valturb.text},${_ktur.text}\n';
     try {
       await ch1!.write(utf8.encode(msg), withoutResponse: false).timeout(const Duration(seconds: 2));
-      await _readParams(); // confirmar
+      await _readParams();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH1: $e')));
@@ -244,7 +375,7 @@ class _HomePageState extends State<HomePage> {
     if (ch2 == null) return;
     try {
       await ch2!.write(utf8.encode('OFFSET=${_offset.text}\n'), withoutResponse: false).timeout(const Duration(seconds: 2));
-      await _readParams(); // refleja offset
+      await _readParams();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH2 (offset): $e')));
@@ -255,14 +386,13 @@ class _HomePageState extends State<HomePage> {
     if (ch2 == null) return;
     try {
       await ch2!.write(utf8.encode('ESTADO=$v\n'), withoutResponse: false).timeout(const Duration(seconds: 2));
-      await _readSensor(); // feedback
+      await _readSensor();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH2 (estado): $e')));
     }
   }
 
-  // NUEVO: enviar umbrales QTR
   Future<void> _sendThresholds() async {
     if (ch2 == null) return;
     final thOn  = _thOn.text.trim();
@@ -272,14 +402,14 @@ class _HomePageState extends State<HomePage> {
           .timeout(const Duration(seconds: 2));
       await ch2!.write(utf8.encode('TH_OFF=$thOff\n'), withoutResponse: false)
           .timeout(const Duration(seconds: 2));
-      await _readSensor(); // refrescar snapshot con th_on/th_off
+      await _readSensor();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Write CH2 (umbrales): $e')));
     }
   }
 
-  // ================== Reads ==================
+  // ============== Reads ==============
   Future<void> _readParams() async {
     if (ch1 == null) return;
     try {
@@ -304,7 +434,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ================== Parsers ==================
+  // ============== Parsers ==============
   Map<String, String> _kvToMap(String s) {
     final out = <String, String>{};
     if (s.trim().isEmpty || s == '—') return out;
@@ -402,7 +532,7 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SOLLOW BLE Tuner'),
+        title: const Text('SOLLOW/ZENIT BLE Tuner'),
         backgroundColor: cs.primary, foregroundColor: cs.onPrimary,
         actions: [
           if (_connected)
@@ -416,10 +546,10 @@ class _HomePageState extends State<HomePage> {
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(color: cs.onPrimary.withOpacity(0.25)),
                   ),
-                  child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(Icons.bluetooth_connected, size: 16),
-                    SizedBox(width: 6),
-                    Text('Conectado'),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.bluetooth_connected, size: 16),
+                    const SizedBox(width: 6),
+                    Text(activeProfile?.label ?? 'Conectado'),
                   ]),
                 ),
               ),
@@ -438,7 +568,7 @@ class _HomePageState extends State<HomePage> {
               label: Text(_connecting ? 'Conectando…' : 'Buscar y Conectar'),
             ),
 
-          // ===== 1) Lectura del sensor (PRIMERO) =====
+          // ===== 1) Lecturas del sensor =====
           Card(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
@@ -465,7 +595,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ===== 2) Parámetros (Lectura) =====
+          // ===== 2) Parámetros (lectura) =====
           Card(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
@@ -495,12 +625,12 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ===== 3) Parámetros (Escritura, incluye KTurb) =====
+          // ===== 3) Parámetros (escritura) =====
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _sectionTitle('Parámetros (escritura PID / Vmax / ValTurb / KTurb)', icon: Icons.tune),
+                _sectionTitle('Parámetros (PID / Vmax / ValTurb / KTurb)', icon: Icons.tune),
                 const SizedBox(height: 12),
                 Wrap(spacing: 12, runSpacing: 12, children: [
                   _numField('Kp', _kp),
@@ -550,7 +680,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ===== 6) Umbrales QTR (TH_ON / TH_OFF) =====
+          // ===== 6) Umbrales QTR =====
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
